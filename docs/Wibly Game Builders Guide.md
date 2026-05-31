@@ -211,7 +211,32 @@ The platform uploads **exactly three artefacts** to R2 per version: `host.mjs`, 
 
 **Do not emit a separate `.css` file.** Vite lib mode extracts imported stylesheets by default. R2 does not ship a `.css` alongside the bundles. Inject CSS at runtime via `vite-plugin-css-injected-by-js` so styles ride inside the `.mjs`.
 
-**Build `server.ts` with esbuild, not Vite.** The platform pipeline esbuilds `server.ts` to a standalone ESM with no externals. Match that locally — do not run `server.ts` through the React/Tailwind Vite config.
+**Build `server.ts` with esbuild, not Vite.** The platform pipeline Vite-bundles host and player separately, and esbuilds `server.ts` to a standalone ESM with no externals. Match that locally — do not run `server.ts` through the React/Tailwind Vite config.
+
+#### Platform publish (centralised pipeline)
+
+**Canonical bundling lives in the Wibly monorepo**, not in your game repo's `dist/` upload. The platform script `tools/scripts/build-experience.ts` reads sources from `experiences/<slug>/` (sync a copy from your repo), validates the manifest, and produces the three R2 artefacts:
+
+| Surface | Tool | Notes |
+|---------|------|-------|
+| `host.tsx` | Vite | React, ui-kit, animation, CSS, and small assets bundled in; `@wibly/sdk` externalised |
+| `player.tsx` | Vite | Separate build — no shared chunks between host and player |
+| `server.ts` | esbuild | Fully self-contained ESM (no externals) |
+
+```bash
+# Dry-run: validate + bundle locally (no R2, no DB)
+pnpm experience:build --experience=the-flatterer --version-id=<exv_id>
+
+# Publish bundles to R2 and register URLs on the version row
+pnpm experience:build --experience=the-flatterer --version-id=<exv_id> --upload
+
+# Also overwrite the stored manifest JSON (default: URLs only — preserves Studio edits)
+pnpm experience:build --experience=the-flatterer --version-id=<exv_id> --upload --update-manifest
+```
+
+Sources are resolved flexibly under `experiences/<slug>/`: `manifest.ts` or `manifest.json`; `{host,player}.tsx` at the root or under `src/`; optional `server.ts`.
+
+Your game repo **still needs** `pnpm typecheck`, `pnpm test`, and `pnpm build` in CI so you catch bundle-shape regressions before sync. The monorepo pipeline enforces the same rules documented in the subsections below (split client builds, CSS injected into `.mjs`, esbuild for server).
 
 #### `vite.config.ts` — dev only
 
@@ -374,12 +399,11 @@ A local Wibly Runtime substrate stubbed for the cost-heavy subsystems (Gateway r
 
 ### 4.3 Staging deploy → real Session
 
-1. Push to the game repo.
-2. Lovable / CI builds the bundle.
-3. The Wibly platform's build pipeline (`tools/scripts/build-experience.ts`) pulls the artefact, validates the manifest, uploads to R2 under `experiences/{exp_id}/versions/{exv_id}/` — **exactly three files**: `{host,player,server}.mjs` (no `.css`, no shared chunks) — and registers the URLs on the `experience_versions` row.
-4. Provision a Session through the User Portal staging environment.
-5. Cast to a TV (Host), join from phones (Players), play through.
-6. Inspect via the Studio Session Inspector (forensic timeline of every state diff, every inference call, every TTS clip).
+1. Push to the game repo (sources synced into `experiences/<slug>/` in the monorepo).
+2. Run `pnpm experience:build --experience=<slug> --version-id=<exv_id> --upload` from the Wibly monorepo — validates the manifest, Vite-bundles host/player, esbuilds server, uploads to R2 under `experiences/{exp_id}/versions/{exv_id}/` (**exactly three files**: `{host,player,server}.mjs`; no `.css`, no shared chunks), and registers bundle URLs. Omit `--update-manifest` unless you intend to overwrite manifest edits made in Studio.
+3. Provision a Session through the User Portal staging environment.
+4. Cast to a TV (Host), join from phones (Players), play through.
+5. Inspect via the Studio Session Inspector (forensic timeline of every state diff, every inference call, every TTS clip).
 
 The first time through this loop, expect rough edges. By the third Session, it should feel routine.
 
@@ -1509,7 +1533,7 @@ See also QA checks §4.6b, §4.16, §4.21, and §4.22 in Annexure C.
 
 ### 8.4 Building `server.ts`
 
-The build pipeline (`tools/scripts/build-experience.ts`) esbuilds `server.ts` to ESM, externalises nothing (the isolate has no module resolver), and uploads to R2 alongside `host.mjs` and `player.mjs`. The Runtime fetches it at first hook invocation and compiles a per-Session V8 module.
+The build pipeline (`tools/scripts/build-experience.ts`) Vite-bundles host/player and esbuilds `server.ts` to ESM (no externals — the isolate has no module resolver), then uploads all three to R2. The Runtime fetches `server.mjs` at first hook invocation and compiles a per-Session V8 module.
 
 **Your `server.ts` must be self-contained.** Any helpers you import (`./lib/scoring`, `./opinions/opinions.json`) are bundled into the ESM output. You cannot import `@wibly/sdk` or any platform package — the isolate has no resolver.
 
@@ -2065,7 +2089,7 @@ A complete, paste-ready `manifest.ts` for The Flatterer. **An AI agent can use t
  * players write 200-character arguments to flip him. 3–8 players, 8 rounds,
  * ~14 minutes, M-tier inference.
  *
- * See: docs/Game Builders Guide.md for the architectural model.
+ * See: docs/Wibly Game Builders Guide.md for the architectural model.
  * See: the_flatterer_spec.md for the gameplay design.
  *
  * NOT this repo's job:
@@ -2580,7 +2604,7 @@ The host renders on a **TV** (1920×1080+, viewed from 3–5 m). Large type, hig
    > - Host advances workflow only via `session.host.advancePhase()` / `session.host.advancePhase({ when: '…' })` when the manifest declares branching transitions.
    > - Use `<Timer nowMs={() => session.time.serverNow()} />` for countdowns; prefer server-published deadlines from state.
    >
-   > See section 6 of docs/Game Builders Guide.md (pasted below)."
+   > See section 6 of docs/Wibly Game Builders Guide.md (pasted below)."
 
 4. **Paste section 6** of this guide.
 5. **Iterate** in Lovable. Preview with `pnpm dev ?surface=host&phase=<phaseId>` for each phase.
@@ -2602,7 +2626,7 @@ The player renders on a **phone** — single column, touch targets ≥ 44×44 pt
    >
    > For active inputs, call `session.submit({ phaseId, inputType, data, predictive? })` where `inputType` matches the manifest phase's `inputSet.inputType`. Use the functional `predictive: (prev) => nextSnapshot` updater per §7.4 — match the server's write shape.
    >
-   > See section 7 of docs/Game Builders Guide.md. Export `mount(session, container)` per §3.2."
+   > See section 7 of docs/Wibly Game Builders Guide.md. Export `mount(session, container)` per §3.2."
 
 3. **Paste section 7** of the guide.
 4. **Iterate** in Lovable. Preview with `pnpm dev ?surface=player&phase=<phaseId>`.
@@ -2616,7 +2640,7 @@ Most integration time lives here. Open Cursor.
 2. **Scaffold hooks:**
 
    > **Prompt for Cursor:**
-   > "Replace the stub hooks in `server.ts` for `<Game Name>` per section 8 of docs/Game Builders Guide.md. Implement:
+   > "Replace the stub hooks in `server.ts` for `<Game Name>` per section 8 of docs/Wibly Game Builders Guide.md. Implement:
    >
    > [PASTE YOUR HOOK MAP HERE — e.g. onPhaseStart('round_start'): pick content from ./content/…; onPlayerSubmit: append submission; onPhaseEnd: run judge callKind; computeScore: award via ctx.score.award; onRoundEnd: increment roundNumber]
    >
@@ -2640,7 +2664,7 @@ Most integration time lives here. Open Cursor.
 ### Phase 7 — First end-to-end test
 
 1. **Commit and push** to GitHub. CI runs `pnpm typecheck && pnpm test && pnpm build`.
-2. **Coordinate with the platform team** to register the experience version: they run the platform build/upload pipeline against staging, which validates the manifest, uploads `dist/` artefacts to R2, and registers URLs on `experience_versions`.
+2. **Coordinate with the platform team** to register the experience version: they run `pnpm experience:build --experience=<slug> --version-id=<exv_id> --upload` from the Wibly monorepo (add `--update-manifest` only when replacing the stored manifest from disk).
 3. **Provision a staging Session** from the staging Portal. Pair the host to a TV (QR / link / TV code).
 4. **Join as players** from phones (and extra browser tabs for bots). Use at least `minPlayers` from your manifest.
 5. **Play through one full round** (or one full session if short). Verify host UI, player UI, inference, TTS, and scoring match the spec.
@@ -2679,7 +2703,7 @@ Define your game's success metric in the spec (e.g. "players understand what to 
 
 When Lovable goes off the rails, anchor it with one of:
 
-- **"Read sections 1.1 and 1.2 of docs/Game Builders Guide.md. Server holds truth, and the workflow is turn-based. You cannot drive UI changes with `setTimeout`. You cannot put workflow logic in React state. The phase id is in `session.getState().phaseId`, set by the server. Refactor accordingly."**
+- **"Read sections 1.1 and 1.2 of docs/Wibly Game Builders Guide.md. Server holds truth, and the workflow is turn-based. You cannot drive UI changes with `setTimeout`. You cannot put workflow logic in React state. The phase id is in `session.getState().phaseId`, set by the server. Refactor accordingly."**
 
 - **"You are calling model providers / TTS providers / fetch directly. Stop. Per invariant 1.3, all inference goes through the Wibly SDK or server-side `ctx.llm.*` / `ctx.tts.speak`. There is no API key in this bundle. Rewrite to use `session.voice.speak({ personaId, text })` (client) or `ctx.llm.call` / `ctx.tts.speak` (server). The personaId is `<your persona id>` from `manifest.personaBindings`."**
 
@@ -2807,7 +2831,7 @@ Categories follow.
 
 ## 2. Correct use of the SDK
 
-For every check below, the source of truth is `docs/Game Builders Guide.md` sections 6 (Host), 7 (Player), and 8 (Server). When in doubt, anchor the verdict against the guide.
+For every check below, the source of truth is `docs/Wibly Game Builders Guide.md` sections 6 (Host), 7 (Player), and 8 (Server). When in doubt, anchor the verdict against the guide.
 
 **2.1 — Single `Session` per surface.** `createSession()` is called by the shell, not the bundle. The bundle receives `session: Session` as the parameter to `mount`. Search both `host.tsx` and `player.tsx` (plus all components they import) for any call to `createSession`. **Any call is FAIL** — the bundle must not construct its own session.
 
