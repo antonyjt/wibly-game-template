@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+/**
+ * Bundle design tokens — Tailwind v4 @theme block.
+ * Reference via utilities (bg-surface) or bracket form:
+ *   className="bg-[color:var(--color-surface)]"
+ */
+@theme {
+  --color-surface: oklch(0.2 0.02 260);
+  --color-foreground: oklch(0.95 0.01 260);
+  --color-accent: oklch(0.72 0.15 250);
+  --color-muted: oklch(0.55 0.03 260);
+  --font-display: "Inter", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+}
+
+:root {
+  --bg-stage: var(--color-surface);
+  --fg-stage: var(--color-foreground);
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  color: var(--fg-stage);
+  background: var(--bg-stage);
+}
